@@ -8,6 +8,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 
 from handlers.receipt_handler import handle_receipt
 from handlers.usage_handler import handle_usage
+from handlers.email_handler import poll_emails
 
 load_dotenv()
 
@@ -39,16 +40,16 @@ async def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
     app.add_handler(CommandHandler("usage", handle_usage))
 
+    # Poll Gmail every 5 minutes
+    app.job_queue.run_repeating(poll_emails, interval=300, first=10)
+
     print("Bot is running...")
     async with app:
         await app.start()
         await app.updater.start_polling()
-        await asyncio.Event().wait()  # Run forever
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    # Flask in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-
-    # Bot runs with its own event loop
     asyncio.run(main())
