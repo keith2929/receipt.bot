@@ -2,3 +2,5 @@ python-telegram-bot==22.0
 python-dotenv
 supabase
 google-cloud-vision
+flask
+requests

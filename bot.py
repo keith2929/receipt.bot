@@ -1,6 +1,8 @@
 import logging
-from dotenv import load_dotenv
+import threading
 import os
+from dotenv import load_dotenv
+from flask import Flask
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 
 from handlers.receipt_handler import handle_receipt
@@ -13,31 +15,35 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# ── Minimal Flask server so Render keeps the service alive ─────────────────────
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def health():
+    return "Bot is running.", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+# ── Telegram bot ───────────────────────────────────────────────────────────────
 def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN not found in .env")
 
+    # Start Flask in a background thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
     app = ApplicationBuilder().token(token).build()
 
-    # Handle documents (files sent as attachments, not compressed photos)
     app.add_handler(MessageHandler(filters.Document.ALL, handle_receipt))
-
-    # Handle compressed photos with a warning
-    app.add_handler(MessageHandler(filters.PHOTO, handle_wrong_format))
-
-    # /usage command
+    app.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
     app.add_handler(CommandHandler("usage", handle_usage))
 
     print("Bot is running...")
     app.run_polling()
-
-async def handle_wrong_format(update, context):
-    await update.message.reply_text(
-        "⚠️ Please send your receipt as a *File*, not a Photo.\n\n"
-        "Tap 📎 → File when attaching — this preserves full quality for better scanning.",
-        parse_mode="Markdown"
-    )
 
 if __name__ == "__main__":
     main()

@@ -10,23 +10,30 @@ from services.parser_service import parse_receipt, format_for_telegram
 logger = logging.getLogger(__name__)
 
 async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
     user_id = update.message.from_user.id
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
     await update.message.reply_text("📥 Got it! Uploading and scanning your receipt...")
 
     try:
-        # Download file from Telegram into memory
-        file = await context.bot.get_file(doc.file_id)
-        file_bytes = bytes(await file.download_as_bytearray())
+        # Handle both documents and compressed photos
+        if update.message.document:
+            doc = update.message.document
+            file = await context.bot.get_file(doc.file_id)
+            original_name = doc.file_name or "receipt.jpg"
+            mime_type = doc.mime_type or "image/jpeg"
+        else:
+            # Photo — Telegram sends multiple sizes, take the largest (last)
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            original_name = "receipt.jpg"
+            mime_type = "image/jpeg"
 
-        # Generate unique filename
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        original_name = doc.file_name or "receipt"
+        file_bytes = bytes(await file.download_as_bytearray())
         filename = f"{user_id}_{timestamp}_{original_name}"
 
         # Upload to Supabase storage
-        storage_path = upload_receipt(file_bytes, filename, doc.mime_type or "image/jpeg")
+        storage_path = upload_receipt(file_bytes, filename, mime_type)
         logger.info(f"Uploaded receipt for user {user_id}: {filename}")
 
         # Run OCR
