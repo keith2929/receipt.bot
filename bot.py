@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import threading
 import os
 from dotenv import load_dotenv
@@ -27,7 +28,7 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port)
 
 # ── Telegram bot ───────────────────────────────────────────────────────────────
-def main():
+async def main():
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise ValueError("BOT_TOKEN not found in .env")
@@ -39,11 +40,15 @@ def main():
     app.add_handler(CommandHandler("usage", handle_usage))
 
     print("Bot is running...")
-    app.run_polling()
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        await asyncio.Event().wait()  # Run forever
 
 if __name__ == "__main__":
-    # Start Flask in background thread BEFORE starting the bot
+    # Flask in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    main()
+    # Bot runs with its own event loop
+    asyncio.run(main())
