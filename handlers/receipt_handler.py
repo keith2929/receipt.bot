@@ -3,8 +3,9 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from services.supabase_service import upload_receipt
+from services.supabase_service import upload_receipt, log_receipt
 from services.ocr_service import extract_text
+from services.parser_service import parse_receipt, format_for_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -19,23 +20,29 @@ async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(doc.file_id)
         file_bytes = bytes(await file.download_as_bytearray())
 
-        # Generate a unique filename: userID_timestamp_originalname
+        # Generate unique filename
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         original_name = doc.file_name or "receipt"
         filename = f"{user_id}_{timestamp}_{original_name}"
 
-        # Upload to Supabase
+        # Upload to Supabase storage
         storage_path = upload_receipt(file_bytes, filename, doc.mime_type or "image/jpeg")
         logger.info(f"Uploaded receipt for user {user_id}: {filename}")
 
         # Run OCR
-        await update.message.reply_text("🔍 Running OCR scan...")
+        await update.message.reply_text("🔍 Scanning receipt...")
         extracted_text = extract_text(file_bytes)
 
-        # Send results back
+        # Parse extracted text
+        parsed = parse_receipt(extracted_text)
+
+        # Save parsed data to Supabase
+        log_receipt(user_id, filename, storage_path, parsed)
+
+        # Send formatted result to Telegram
+        summary = format_for_telegram(parsed)
         await update.message.reply_text(
-            f"✅ Receipt saved!\n\n"
-            f"📄 *Extracted text:*\n```\n{extracted_text}\n```",
+            f"✅ *Receipt saved!*\n\n{summary}",
             parse_mode="Markdown"
         )
 
