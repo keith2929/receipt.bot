@@ -32,10 +32,6 @@ def main():
     if not token:
         raise ValueError("BOT_TOKEN not found in .env")
 
-    # Start Flask in a background thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
     app = ApplicationBuilder().token(token).build()
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_receipt))
@@ -46,4 +42,8 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+    # Start Flask in background thread BEFORE starting the bot
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
     main()
