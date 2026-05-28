@@ -7,3 +7,4 @@ google-api-python-client
 flask
 requests
 pdf2image
+beautifulsoup4

@@ -21,15 +21,34 @@ def _make_gmail_client():
     return build("gmail", "v1", credentials=creds)
 
 
+def _get_html_body(payload: dict) -> str | None:
+    """Recursively extract HTML body from email payload."""
+    mime_type = payload.get("mimeType", "")
+    
+    if mime_type == "text/html":
+        data = payload.get("body", {}).get("data")
+        if data:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+
+    for part in payload.get("parts", []):
+        result = _get_html_body(part)
+        if result:
+            return result
+
+    return None
+
+
 def get_unread_receipt_emails() -> list[dict]:
     """
-    Fetch unread emails with attachments from Gmail inbox.
-    Returns list of dicts with subject, sender, and attachments.
+    Fetch unread emails from Gmail inbox.
+    Returns list of dicts with subject, sender, attachments, and html_body.
     """
     service = _make_gmail_client()
+
+    # Get all unread emails (with or without attachments)
     results = service.users().messages().list(
         userId="me",
-        q="is:unread has:attachment"
+        q="is:unread"
     ).execute()
 
     messages = results.get("messages", [])
@@ -46,30 +65,24 @@ def get_unread_receipt_emails() -> list[dict]:
         subject = headers.get("Subject", "No subject")
         sender = headers.get("From", "Unknown sender")
 
+        # Extract attachments
         attachments = []
         parts = msg_data["payload"].get("parts", [])
-
         for part in parts:
             mime_type = part.get("mimeType", "")
             filename = part.get("filename", "")
-
             if not filename:
                 continue
-
-            # Only process images and PDFs
             if not any(mime_type.startswith(t) for t in ["image/", "application/pdf"]):
                 continue
-
             attachment_id = part["body"].get("attachmentId")
             if not attachment_id:
                 continue
-
             att_data = service.users().messages().attachments().get(
                 userId="me",
                 messageId=msg["id"],
                 id=attachment_id
             ).execute()
-
             file_bytes = base64.urlsafe_b64decode(att_data["data"])
             attachments.append({
                 "filename": filename,
@@ -77,13 +90,16 @@ def get_unread_receipt_emails() -> list[dict]:
                 "data": file_bytes
             })
 
-        if attachments:
-            emails.append({
-                "id": msg["id"],
-                "subject": subject,
-                "sender": sender,
-                "attachments": attachments
-            })
+        # Extract HTML body
+        html_body = _get_html_body(msg_data["payload"])
+
+        emails.append({
+            "id": msg["id"],
+            "subject": subject,
+            "sender": sender,
+            "attachments": attachments,
+            "html_body": html_body,
+        })
 
     return emails
 
