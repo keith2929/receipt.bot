@@ -4,68 +4,70 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# ── Receipt detection ──────────────────────────────────────────────────────────
+
+RECEIPT_SUBJECTS = [
+    "receipt", "order", "payment", "invoice", "purchase",
+    "confirmation", "transaction", "your order"
+]
+
+RECEIPT_SENDERS = [
+    "mcdonalds.com", "mcdonald", "grab", "foodpanda", "shopee",
+    "lazada", "amazon", "ntuc", "fairprice", "kfc", "burgerking",
+    "starbucks", "toast", "deliveroo", "airbnb", "booking.com"
+]
+
+def is_receipt_email(sender: str, subject: str) -> bool:
+    """Check if email looks like a receipt before trying to parse it."""
+    sender_lower = sender.lower()
+    subject_lower = subject.lower()
+    sender_match = any(s in sender_lower for s in RECEIPT_SENDERS)
+    subject_match = any(s in subject_lower for s in RECEIPT_SUBJECTS)
+    return sender_match or subject_match
+
+
+# ── Main parser ────────────────────────────────────────────────────────────────
 
 def parse_html_receipt(html: str, sender: str, subject: str) -> dict | None:
     """
     Parse receipt data from an HTML email body.
-    Returns a parsed dict in the same format as parse_receipt(),
-    or None if the email doesn't look like a receipt.
+    Returns a parsed dict or None if email doesn't look like a receipt.
     """
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(separator="\n")
-
-    # Detect if this looks like a receipt at all
-    receipt_keywords = ["total", "order", "payment", "receipt", "amount", "invoice"]
-    if not any(kw in text.lower() for kw in receipt_keywords):
+    if not is_receipt_email(sender, subject):
+        logger.info(f"Skipping non-receipt email: {subject} from {sender}")
         return None
 
-    # ── McDonald's format ─────────────────────────────────────────────────────
-    if "mcdonalds" in sender.lower() or "mcdonald" in text.lower():
-        return _parse_mcdonalds(soup, text)
+    soup = BeautifulSoup(html, "html.parser")
 
-    # ── Generic HTML receipt fallback ─────────────────────────────────────────
-    return _parse_generic(soup, text, sender)
+    if "mcdonalds.com" in sender.lower() or "mcdonald" in subject.lower():
+        return _parse_mcdonalds(soup)
+
+    return _parse_generic(soup, sender)
 
 
-def _parse_mcdonalds(soup: BeautifulSoup, text: str) -> dict:
-    """Parse McDonald's email receipt format."""
-    items = []
+# ── McDonald's parser ──────────────────────────────────────────────────────────
 
-    # Extract items from the order table
-    rows = soup.find_all("tr")
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) >= 3:
-            qty_text = cells[0].get_text(strip=True)
-            item_text = cells[1].get_text(strip=True)
-            price_text = cells[2].get_text(strip=True)
-
-            # Skip header rows, empty rows, and modifier rows (no price)
-            price_match = re.search(r"SGD\s*([\d.]+)", price_text)
-            qty_match = re.match(r"^\d+$", qty_text)
-
-            if qty_match and price_match and item_text:
-                items.append({
-                    "name": item_text.strip(),
-                    "price": float(price_match.group(1))
-                })
-
-    # Extract GST
-    gst_match = re.search(r"SGD\s*([\d.]+)", 
-        "\n".join([r.get_text() for r in soup.find_all("tr") 
-                   if "GST" in r.get_text() and "SGD" in r.get_text()]))
-    if gst_match:
-        items.append({"name": "GST (not separately charged)", 
-                      "price": float(gst_match.group(1))})
-
-    # Extract total
-    total = 0.0
-    total_match = re.search(r"Total.*?SGD\s*([\d.]+)", text, re.IGNORECASE | re.DOTALL)
-    if total_match:
-        total = float(total_match.group(1))
-
-    # Extract date
+def _parse_mcdonalds(soup: BeautifulSoup) -> dict:
     from datetime import datetime
+
+    text = soup.get_text(separator="\n")
+
+    # ── Merchant & location ───────────────────────────────────────────────────
+    merchant = "McDonald's"
+    location = "Unknown"
+
+    all_rows = soup.find_all("tr")
+    for row in all_rows:
+        cells = row.find_all(["td", "th"])
+        if len(cells) >= 2:
+            label = cells[0].get_text(strip=True)
+            value = cells[1].get_text(strip=True)
+            if "Restaurant Name" in label:
+                merchant = value
+            if "Address" in label:
+                location = " ".join(value.split())
+
+    # ── Date ─────────────────────────────────────────────────────────────────
     receipt_date = None
     date_match = re.search(r"(\d{2}/\d{2}/\d{2,4})\s+(\d{2}:\d{2})", text)
     if date_match:
@@ -77,26 +79,53 @@ def _parse_mcdonalds(soup: BeautifulSoup, text: str) -> dict:
             except ValueError:
                 continue
 
-    # Extract restaurant name
-    merchant = "McDonald's"
-    restaurant_match = re.search(r"Restaurant Name.*?\n.*?(McDonald's[^\n]+)", text)
-    if restaurant_match:
-        merchant = restaurant_match.group(1).strip()
+    # ── Items ─────────────────────────────────────────────────────────────────
+    # Only include top-level items (those with a price in SGD)
+    items = []
+    for row in all_rows:
+        cells = row.find_all("td")
+        if len(cells) < 3:
+            continue
 
-    # Extract location/address
-    location = "Unknown"
-    address_match = re.search(r"Address.*?\n(.*?Singapore\s*\d{6})", text, re.DOTALL)
-    if address_match:
-        location = " ".join(address_match.group(1).split())
+        qty_text = cells[0].get_text(strip=True)
+        item_text = cells[1].get_text(strip=True)
+        price_text = cells[2].get_text(strip=True)
 
-    # Extract payment
+        price_match = re.search(r"SGD\s*([\d.]+)", price_text)
+        if not price_match:
+            continue  # Skip sub-items and rows without price
+
+        # Clean item name — remove leading numbers and whitespace
+        item_name = re.sub(r"^\s*\d+\s*", "", item_text).strip()
+        if not item_name:
+            continue
+
+        items.append({
+            "name": item_name,
+            "price": float(price_match.group(1))
+        })
+
+    # ── GST ───────────────────────────────────────────────────────────────────
+    gst_match = re.search(r"GST Inclusive.*?SGD\s*([\d.]+)", text, re.DOTALL)
+    if not gst_match:
+        gst_match = re.search(r"SGD\s*([\d.]+)(?=.*GST)", text)
+    if gst_match:
+        items.append({
+            "name": "GST (not separately charged)",
+            "price": float(gst_match.group(1))
+        })
+
+    # ── Total ─────────────────────────────────────────────────────────────────
+    total = 0.0
+    total_match = re.search(r"Total:.*?SGD\s*([\d.]+)", text, re.DOTALL)
+    if total_match:
+        total = float(total_match.group(1))
+
+    # ── Payment ───────────────────────────────────────────────────────────────
     payment = "Unknown"
-    if re.search(r"visa", text, re.IGNORECASE):
-        payment = "Visa"
-    elif re.search(r"mastercard", text, re.IGNORECASE):
-        payment = "Mastercard"
-    elif re.search(r"paynow", text, re.IGNORECASE):
-        payment = "PayNow"
+    card_match = re.search(r"Card Issuer.*?\n.*?(\w+)", text)
+    if card_match:
+        payment = card_match.group(1).strip()
 
     return {
         "merchant": merchant,
@@ -109,20 +138,21 @@ def _parse_mcdonalds(soup: BeautifulSoup, text: str) -> dict:
     }
 
 
-def _parse_generic(soup: BeautifulSoup, text: str, sender: str) -> dict:
-    """Generic fallback parser for unknown HTML receipt formats."""
+# ── Generic fallback ───────────────────────────────────────────────────────────
+
+def _parse_generic(soup: BeautifulSoup, sender: str) -> dict:
     from datetime import datetime
 
-    # Try to extract total
+    text = soup.get_text(separator="\n")
+
     total = 0.0
     total_match = re.search(
-        r"(?:total|amount due|grand total)[^\d]*([\d,]+\.\d{2})", 
+        r"(?:total|amount due|grand total)[^\d]*([\d,]+\.\d{2})",
         text, re.IGNORECASE
     )
     if total_match:
         total = float(total_match.group(1).replace(",", ""))
 
-    # Try to extract date
     receipt_date = None
     date_match = re.search(r"(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(\d{2}:\d{2})", text)
     if date_match:
@@ -133,7 +163,6 @@ def _parse_generic(soup: BeautifulSoup, text: str, sender: str) -> dict:
         except ValueError:
             pass
 
-    # Merchant from sender email domain
     merchant = re.sub(r"[<>].*", "", sender).strip()
 
     return {
