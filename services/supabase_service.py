@@ -58,3 +58,63 @@ def get_monthly_usage(user_id: int) -> int:
         .gte("scanned_at", month_start) \
         .execute()
     return response.count or 0
+
+
+def get_spend_summary(user_id: int) -> dict:
+    """Return spend totals for today, this week, and this month, plus top merchants."""
+    now = datetime.utcnow()
+
+    today_start = datetime(now.year, now.month, now.day).isoformat()
+    week_day = now.weekday()  # Monday=0
+    week_start = datetime(now.year, now.month, now.day - week_day).isoformat()
+    month_start = datetime(now.year, now.month, 1).isoformat()
+
+    response = supabase.table("receipts") \
+        .select("total_amount, merchant, receipt_date, scanned_at") \
+        .eq("user_id", user_id) \
+        .gte("scanned_at", month_start) \
+        .execute()
+
+    rows = response.data or []
+
+    today_total = 0.0
+    week_total = 0.0
+    month_total = 0.0
+    merchant_totals: dict = {}
+    receipt_count = len(rows)
+
+    for row in rows:
+        amount = float(row.get("total_amount") or 0)
+        scanned_at = row.get("scanned_at", "")
+        merchant = row.get("merchant") or "Unknown"
+
+        month_total += amount
+
+        if scanned_at >= week_start:
+            week_total += amount
+
+        if scanned_at >= today_start:
+            today_total += amount
+
+        merchant_totals[merchant] = merchant_totals.get(merchant, 0.0) + amount
+
+    top_merchants = sorted(merchant_totals.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return {
+        "today": today_total,
+        "week": week_total,
+        "month": month_total,
+        "receipt_count": receipt_count,
+        "top_merchants": top_merchants,
+    }
+
+
+def get_recent_receipts(user_id: int, limit: int = 5) -> list:
+    """Return the most recent receipts for the user."""
+    response = supabase.table("receipts") \
+        .select("merchant, total_amount, receipt_date, scanned_at") \
+        .eq("user_id", user_id) \
+        .order("scanned_at", desc=True) \
+        .limit(limit) \
+        .execute()
+    return response.data or []

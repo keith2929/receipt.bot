@@ -9,6 +9,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 from handlers.receipt_handler import handle_receipt
 from handlers.usage_handler import handle_usage
 from handlers.email_handler import poll_emails
+from handlers.dashboard_handler import handle_dashboard, handle_recent, handle_spend
 
 load_dotenv()
 
@@ -39,6 +40,9 @@ async def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_receipt))
     app.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
     app.add_handler(CommandHandler("usage", handle_usage))
+    app.add_handler(CommandHandler("dashboard", handle_dashboard))
+    app.add_handler(CommandHandler("recent", handle_recent))
+    app.add_handler(CommandHandler("spend", handle_spend))
 
     # Poll Gmail every 5 minutes
     app.job_queue.run_repeating(poll_emails, interval=300, first=10)
